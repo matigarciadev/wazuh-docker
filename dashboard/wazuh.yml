@@ -1,0 +1,18 @@
+hosts:
+  - wazuh_manager_1:
+      url: https://wazuh-manager-1.wazuh.lab
+      port: 55000
+      username: wazuh-wui
+      password: wazuh-wui
+      run_as: false
+  - wazuh_manager_2:
+      url: https://wazuh-manager-2.wazuh.lab
+      port: 55000
+      username: wazuh-wui
+      password: wazuh-wui
+      run_as: false
+
+ssl:
+  verification_mode: certificate
+  certificate_authorities:
+    - /usr/share/wazuh-dashboard/data/wazuh/config/certs/root-ca.pem

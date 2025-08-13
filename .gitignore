@@ -1,0 +1,2 @@
+# Ignore PEM certs
+**/*.pem

@@ -1,0 +1,37 @@
+cluster.name: "wazuh-indexer"
+node.name: "node-1"
+
+path.data: /var/lib/wazuh-indexer
+path.logs: /var/log/wazuh-indexer
+
+network.host: 0.0.0.0
+http.port: 9200
+
+# single node
+discovery.type: single-node
+# OJO: sin cluster.initial_master_nodes acá
+
+bootstrap.memory_lock: true
+bootstrap.system_call_filter: false
+
+# TLS transport
+plugins.security.ssl.transport.pemcert_filepath: certs/indexer.pem
+plugins.security.ssl.transport.pemkey_filepath: certs/indexer-key.pem
+plugins.security.ssl.transport.pemtrustedcas_filepath: certs/root-ca.pem
+plugins.security.ssl.transport.enforce_hostname_verification: true
+
+# TLS HTTP
+plugins.security.ssl.http.enabled: true
+plugins.security.ssl.http.pemcert_filepath: certs/indexer.pem
+plugins.security.ssl.http.pemkey_filepath: certs/indexer-key.pem
+plugins.security.ssl.http.pemtrustedcas_filepath: certs/root-ca.pem
+
+# Admin DN
+plugins.security.authcz.admin_dn:
+  - "CN=admin,OU=admin,O=wazuh,L=local,C=US"
+
+# Init of safety index
+plugins.security.allow_unsafe_democertificates: false
+plugins.security.allow_default_init_securityindex: true
+
+compatibility.override_main_response_version: true
