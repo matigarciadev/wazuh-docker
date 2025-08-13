@@ -23,15 +23,19 @@
 nodes:
   indexer:
     - name: wazuh-indexer
-      ip: "wazuh-indexer.local"
+      ip: "wazuh-indexer.wazuh.lab"
 
   server:
-    - name: wazuh-manager
-      ip: "wazuh-manager.local"
+    - name: wazuh-manager-1
+      ip: "wazuh-manager-1.wazuh.lab"
+      node_type: master
+    - name: wazuh-manager-2
+      ip: "wazuh-manager-2.wazuh.lab"
+      node_type: worker
 
   dashboard:
     - name: wazuh-dashboard
-      ip: "wazuh-dashboard.local"
+      ip: "wazuh-dashboard.wazuh.lab"
 ```
 
 Directory layout:
