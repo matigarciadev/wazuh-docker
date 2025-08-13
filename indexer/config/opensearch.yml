@@ -9,7 +9,6 @@ http.port: 9200
 
 # single node
 discovery.type: single-node
-# OJO: sin cluster.initial_master_nodes acá
 
 bootstrap.memory_lock: true
 bootstrap.system_call_filter: false
