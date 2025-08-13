@@ -157,20 +157,31 @@ Create `manager/docker-entrypoint.sh`:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
+log(){ echo "[entrypoint] $*"; }
 
-if [ -f /etc/wazuh/certs/server.pem ] && [ -f /etc/wazuh/certs/server-key.pem ]; then
-  echo "[entrypoint] Installing API TLS certs for Wazuh..."
-  cp /etc/wazuh/certs/server.pem     /var/ossec/api/configuration/ssl/server.crt
-  cp /etc/wazuh/certs/server-key.pem /var/ossec/api/configuration/ssl/server.key
-  chown wazuh:wazuh /var/ossec/api/configuration/ssl/server.crt /var/ossec/api/configuration/ssl/server.key
-  chmod 644 /var/ossec/api/configuration/ssl/server.crt
-  chmod 640 /var/ossec/api/configuration/ssl/server.key
+API_SSL_DIR="/var/ossec/api/configuration/ssl"
+CRT_SRC="/etc/wazuh/certs/server.pem"
+KEY_SRC="/etc/wazuh/certs/server-key.pem"
+CRT_DST="$API_SSL_DIR/server.crt"
+KEY_DST="$API_SSL_DIR/server.key"
+
+# Ensure API SSL dir exists before copying
+mkdir -p "$API_SSL_DIR"
+
+if [[ -f "$CRT_SRC" && -f "$KEY_SRC" ]]; then
+  log "Installing API TLS certs..."
+  install -o wazuh -g wazuh -m 0644 "$CRT_SRC" "$CRT_DST"
+  install -o wazuh -g wazuh -m 0640 "$KEY_SRC" "$KEY_DST"
+else
+  log "WARN: missing $CRT_SRC or $KEY_SRC (API TLS may fail)"
 fi
 
+# Start Wazuh
+log "Starting Wazuh..."
 /var/ossec/bin/wazuh-control start
 
-# 3. keep live
-exec tail -F /var/ossec/logs/ossec.log
+# Keep alive & show useful logs
+exec tail -F /var/ossec/logs/ossec.log /var/ossec/logs/cluster.log
 ```
 ---
 
@@ -206,16 +217,34 @@ MANAGER_HOST=${MANAGER_HOST:-wazuh-manager}
 MANAGER_PORT=${MANAGER_PORT:-1515}
 AGENT_NAME=${AGENT_NAME:-$(hostname)}
 
-# Replace first <address>…</address> with manager host
-sed -i "0,/<address>/{s|<address>.*</address>|<address>${MANAGER_HOST}</address>|}" \
-    /var/ossec/etc/ossec.conf
+# ---------- FIM (Syscheck) knobs ----------
+# Override via environment variables in docker-compose
+FIM_REALTIME=${FIM_REALTIME:-yes}   # yes|1 to enable realtime
+FIM_DIRS=${FIM_DIRS:-/etc}          # comma- or space-separated list of dirs
+FIM_FREQUENCY=${FIM_FREQUENCY:-}    # e.g., 600 for tests; empty = leave as-is
 
-# Register if no key present
-if ! grep -q "$AGENT_NAME" /var/ossec/etc/client.keys 2>/dev/null; then
+conf="/var/ossec/etc/ossec.conf"
+
+echo "[entrypoint] Waiting for DNS of ${MANAGER_HOST}..."
+for i in {1..30}; do
+  if getent hosts "$MANAGER_HOST" >/dev/null; then break; fi
+  sleep 2
+done
+
+echo "[entrypoint] Setting <address> to ${MANAGER_HOST}..."
+sed -i "0,/<address>/{s|<address>.*</address>|<address>${MANAGER_HOST}</address>|}" "$conf"
+
+# Auto-enroll if client.keys is missing/empty
+if [ ! -s /var/ossec/etc/client.keys ]; then
+  echo "[entrypoint] Registering agent to ${MANAGER_HOST}:${MANAGER_PORT}..."
   /var/ossec/bin/agent-auth -m "$MANAGER_HOST" -p "$MANAGER_PORT" -A "$AGENT_NAME" || true
 fi
 
-exec /var/ossec/bin/wazuh-agentd -f
+echo "[entrypoint] Starting Wazuh agent..."
+/var/ossec/bin/wazuh-control start
+
+echo "[entrypoint] Tailing logs..."
+exec tail -F /var/ossec/logs/ossec.log /var/ossec/logs/active-responses.log
 EOF
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
@@ -257,16 +286,34 @@ MANAGER_HOST=${MANAGER_HOST:-wazuh-manager}
 MANAGER_PORT=${MANAGER_PORT:-1515}
 AGENT_NAME=${AGENT_NAME:-$(hostname)}
 
-# Replace first <address>…</address> with manager host
-sed -i "0,/<address>/{s|<address>.*</address>|<address>${MANAGER_HOST}</address>|}" \
-    /var/ossec/etc/ossec.conf
+# ---------- FIM (Syscheck) knobs ----------
+# Override via environment variables in docker-compose
+FIM_REALTIME=${FIM_REALTIME:-yes}   # yes|1 to enable realtime
+FIM_DIRS=${FIM_DIRS:-/etc}          # comma- or space-separated list of dirs
+FIM_FREQUENCY=${FIM_FREQUENCY:-}    # e.g., 600 for tests; empty = leave as-is
 
-# Register if no key present
-if ! grep -q "$AGENT_NAME" /var/ossec/etc/client.keys 2>/dev/null; then
+conf="/var/ossec/etc/ossec.conf"
+
+echo "[entrypoint] Waiting for DNS of ${MANAGER_HOST}..."
+for i in {1..30}; do
+  if getent hosts "$MANAGER_HOST" >/dev/null; then break; fi
+  sleep 2
+done
+
+echo "[entrypoint] Setting <address> to ${MANAGER_HOST}..."
+sed -i "0,/<address>/{s|<address>.*</address>|<address>${MANAGER_HOST}</address>|}" "$conf"
+
+# Auto-enroll if client.keys is missing/empty
+if [ ! -s /var/ossec/etc/client.keys ]; then
+  echo "[entrypoint] Registering agent to ${MANAGER_HOST}:${MANAGER_PORT}..."
   /var/ossec/bin/agent-auth -m "$MANAGER_HOST" -p "$MANAGER_PORT" -A "$AGENT_NAME" || true
 fi
 
-exec /var/ossec/bin/wazuh-agentd -f
+echo "[entrypoint] Starting Wazuh agent..."
+/var/ossec/bin/wazuh-control start
+
+echo "[entrypoint] Tailing logs..."
+exec tail -F /var/ossec/logs/ossec.log /var/ossec/logs/active-responses.log
 EOF
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
@@ -278,47 +325,46 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 Create `docker-compose.yml`:
 ```yaml
 services:
-
-  # Agents
+  # ---------- Agents (point to the Load Balancer) ----------
   agent-centos:
-    build: ./agent-centos
+    build: ./agents/agent-centos
     environment:
-      MANAGER_HOST: wazuh-manager
+      MANAGER_HOST: wazuh-lb         # enrollment via LB (service DNS on the same Docker network)
       MANAGER_PORT: "1515"
       AGENT_NAME: agent-centos
     depends_on:
-      manager:
-        condition: service_healthy
-    networks:
-      - wazuh-net
+      manager-1: { condition: service_healthy }
+      manager-2: { condition: service_healthy }
+      wazuh-lb:  { condition: service_started }
+    networks: [wazuh-net]
     restart: unless-stopped
 
   agent-ubuntu:
-    build: ./agent-ubuntu
+    build: ./agents/agent-ubuntu
     environment:
-      MANAGER_HOST: wazuh-manager
+      MANAGER_HOST: wazuh-lb
       MANAGER_PORT: "1515"
       AGENT_NAME: agent-ubuntu
     depends_on:
-      manager:
-        condition: service_healthy
-    networks:
-      - wazuh-net
+      manager-1: { condition: service_healthy }
+      manager-2: { condition: service_healthy }
+      wazuh-lb:  { condition: service_started }
+    networks: [wazuh-net]
     restart: unless-stopped
 
-  # Manager
-  manager:
+  # ---------- Manager 1 (MASTER) ----------
+  manager-1:
     build: ./manager
-    hostname: wazuh-manager
+    hostname: wazuh-manager-1
+    # Expose API for the Dashboard app; 1516 only if you want to inspect cluster from host
     ports:
-      - "1514:1514/udp"
-      - "1515:1515"
-      - "1516:1516"
-      - "55000:55000"
+      - "55000:55000"    # Wazuh API
+      - "1516:1516"      # Cluster backbone (optional to expose)
     volumes:
-      - ./certs/manager:/etc/wazuh/certs:ro
-      - wazuh-logs:/var/ossec/logs
-
+      - ./certs/manager-1:/etc/wazuh/certs:ro
+      - ./managers/manager-1/config/ossec.conf:/var/ossec/etc/ossec.conf:ro
+      - manager-1-logs:/var/ossec/logs
+      - ./manager/docker-entrypoint.sh:/usr/local/bin/docker-entrypoint.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pgrep -x wazuh-monitord >/dev/null"]
       interval: 30s
@@ -328,71 +374,113 @@ services:
     networks:
       wazuh-net:
         aliases:
-          - wazuh
-          - wazuh-manager.local
-          - wazuh-manager
+          - wazuh-manager-1
+          - wazuh-manager-1.wazuh.lab
     restart: unless-stopped
 
-  # Indexer
+  # ---------- Manager 2 (WORKER) ----------
+  manager-2:
+    build: ./manager
+    hostname: wazuh-manager-2
+    volumes:
+      - ./certs/manager-2:/etc/wazuh/certs:ro
+      - ./managers/manager-2/config/ossec.conf:/var/ossec/etc/ossec.conf:ro
+      - manager-2-logs:/var/ossec/logs
+      - ./manager/docker-entrypoint.sh:/usr/local/bin/docker-entrypoint.sh:ro
+    depends_on:
+      indexer: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x wazuh-monitord >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      wazuh-net:
+        aliases:
+          - wazuh-manager-2
+          - wazuh-manager-2.wazuh.lab
+    restart: unless-stopped
+
+  # ---------- Load Balancer (HAProxy) ----------
+  # Note: no host port publishing to avoid conflicts (1514 already in use on host).
+  # If you need external agents, map host ports here, e.g. "51514:1514" and "51515:1515".
+  wazuh-lb:
+    image: haproxy:2.9
+    hostname: wazuh-lb
+    depends_on:
+      manager-1: { condition: service_healthy }
+      manager-2: { condition: service_healthy }
+    expose:
+      - "1514"
+      - "1515"
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      wazuh-net:
+        aliases:
+          - wazuh-lb
+          - wazuh-lb.wazuh.lab
+    restart: unless-stopped
+
+  # ---------- Indexer ----------
   indexer:
     image: wazuh/wazuh-indexer:4.12.0
     container_name: wazuh-indexer
+    hostname: wazuh-indexer
     environment:
       OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
     ulimits:
-      memlock:
-        soft: -1
-        hard: -1
+      memlock: { soft: -1, hard: -1 }
     ports:
       - "9200:9200"
       - "9300:9300"
     volumes:
       - ./certs/indexer:/usr/share/wazuh-indexer/certs:ro
       - ./indexer/config/opensearch.yml:/usr/share/wazuh-indexer/opensearch.yml:ro
-
+      - esdata:/usr/share/wazuh-indexer/data
     networks:
       wazuh-net:
         aliases:
-          - wazuh-indexer.local
-          
+          - wazuh-indexer
+          - wazuh-indexer.wazuh.lab
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl --silent --fail --cacert /usr/share/wazuh-indexer/certs/root-ca.pem -u admin:admin --connect-timeout 2 --max-time 5 \"https://wazuh-indexer.local:9200/_cluster/health?wait_for_status=yellow&timeout=10s\" > /dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl --silent --fail --cacert /usr/share/wazuh-indexer/certs/root-ca.pem -u admin:admin --connect-timeout 2 --max-time 5 \"https://wazuh-indexer.wazuh.lab:9200/_cluster/health?wait_for_status=yellow&timeout=10s\" > /dev/null || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 10
       start_period: 90s
-      
-  # Dashboard (OpenSearch Dashboards)
+
+  # ---------- Dashboard ----------
   dashboard:
     image: wazuh/wazuh-dashboard:4.12.0
     container_name: wazuh-dashboard
+    hostname: wazuh-dashboard
     depends_on:
-      manager:
-        condition: service_healthy
-      indexer:
-        condition: service_healthy
+      manager-1: { condition: service_healthy }
+      manager-2: { condition: service_healthy }
+      indexer:   { condition: service_healthy }
     environment:
-      OPENSEARCH_HOSTS: '["https://wazuh-indexer.local:9200"]'
+      OPENSEARCH_HOSTS: '["https://wazuh-indexer.wazuh.lab:9200"]'
       OPENSEARCH_USERNAME: admin
       OPENSEARCH_PASSWORD: admin
       OPENSEARCH_SSL_VERIFICATIONMODE: full
       OPENSEARCH_SSL_CERTIFICATEAUTHORITIES: /etc/wazuh-dashboard/certs/root-ca.pem
-
       SERVER_SSL_ENABLED: "true"
       SERVER_SSL_CERTIFICATE: /etc/wazuh-dashboard/certs/dashboard.pem
       SERVER_SSL_KEY: /etc/wazuh-dashboard/certs/dashboard-key.pem
-
     ports:
       - "5601:5601"
     volumes:
-      - wazuh-dashboard-data:/usr/share/wazuh-dashboard/data
       - ./dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml:ro
+      - ./dashboard/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml:ro
       - ./certs/dashboard:/etc/wazuh-dashboard/certs:ro
     networks:
       wazuh-net:
         aliases:
-          - wazuh-dashboard.local
+          - wazuh-dashboard
+          - wazuh-dashboard.wazuh.lab
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -sk -u admin:admin https://localhost:5601/api/status | grep -qi '\"state\":\"green\"'"]
@@ -400,20 +488,22 @@ services:
       timeout: 10s
       retries: 5
 
-  # Filebeat
+  # ---------- Single Filebeat (reads alerts from both managers) ----------
   filebeat:
     image: docker.elastic.co/beats/filebeat-oss:7.10.2
     container_name: wazuh-filebeat
     user: root
     depends_on:
-      manager:
-        condition: service_healthy
+      manager-1: { condition: service_healthy }
+      manager-2: { condition: service_healthy }
+      indexer:   { condition: service_healthy }
     networks: [wazuh-net]
     restart: unless-stopped
     volumes:
       - ./filebeat/config/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
       - ./certs/filebeat:/usr/share/filebeat/certs:ro
-      - wazuh-logs:/var/ossec/logs:ro
+      - manager-1-logs:/sources/manager-1/logs:ro
+      - manager-2-logs:/sources/manager-2/logs:ro
       - ./filebeat/config/wazuh-template.json:/etc/filebeat/wazuh-template.json:ro
     healthcheck:
       test: ["CMD-SHELL", "filebeat test config -e && filebeat test output -e"]
@@ -422,14 +512,17 @@ services:
       retries: 5
       start_period: 20s
 
+# ---------- Persistent volumes ----------
 volumes:
-  wazuh-data:
+  manager-1-logs:
+  manager-2-logs:
   esdata:
-  wazuh-logs:
-  wazuh-dashboard-data:
+
+# ---------- Network ----------
 networks:
   wazuh-net:
     driver: bridge
+    name: wazuh-docker_wazuh-net
 ```
 ### 2.4 Build and Run
 Run the following command in the directory containing `docker-compose.yml`:
@@ -438,23 +531,26 @@ docker compose up build
 
 # Launch the stack
 docker compose up -d
-[+] Running 7/7
-✅ Network wazuh-docker_wazuh-net         Created                                                                                                                                                                             0.0s 
-✅ Container wazuh-indexer                Healthy                                                                                                                                                                            15.8s 
-✅ Container wazuh-docker-manager-1       Healthy                                                                                                                                                                            10.7s 
-✅ Container wazuh-docker-agent-ubuntu-1  Started                                                                                                                                                                            10.8s 
-✅ Container wazuh-dashboard              Started                                                                                                                                                                            15.9s 
-✅ Container wazuh-filebeat               Started                                                                                                                                                                            10.8s 
-✅ Container wazuh-docker-agent-centos-1  Started                                                                                                                                                                            10.8s 
-# Check container status
+[+] Running 8/8
+ ✔ Container wazuh-docker-manager-1-1     Healthy                                                                                                                                                    1.5s 
+ ✔ Container wazuh-indexer                Healthy                                                                                                                                                    1.0s 
+ ✔ Container wazuh-docker-manager-2-1     Healthy                                                                                                                                                    1.0s 
+ ✔ Container wazuh-filebeat               Running                                                                                                                                                    0.0s 
+ ✔ Container wazuh-dashboard              Running                                                                                                                                                    0.0s 
+ ✔ Container wazuh-docker-wazuh-lb-1      Running                                                                                                                                                    0.0s 
+ ✔ Container wazuh-docker-agent-ubuntu-1  Running                                                                                                                                                    0.0s 
+ ✔ Container wazuh-docker-agent-centos-1  Running                                                                                                                                                    0.0s
+ # Check container status
 docker compose ps
-NAME                          IMAGE                                         COMMAND                  SERVICE        CREATED         STATUS                   PORTS
-wazuh-dashboard               wazuh/wazuh-dashboard:4.12.0                  "/entrypoint.sh"         dashboard      6 minutes ago   Up 6 minutes (healthy)   443/tcp, 0.0.0.0:5601->5601/tcp, [::]:5601->5601/tcp
-wazuh-docker-agent-centos-1   wazuh-docker-agent-centos                     "/usr/local/bin/entr…"   agent-centos   6 minutes ago   Up 6 minutes             1514/udp
-wazuh-docker-agent-ubuntu-1   wazuh-docker-agent-ubuntu                     "/usr/local/bin/entr…"   agent-ubuntu   6 minutes ago   Up 6 minutes             1514/udp
-wazuh-docker-manager-1        wazuh-docker-manager                          "/usr/local/bin/dock…"   manager        6 minutes ago   Up 6 minutes (healthy)   0.0.0.0:1515-1516->1515-1516/tcp, [::]:1515-1516->1515-1516/tcp, 0.0.0.0:1514->1514/udp, [::]:1514->1514/udp, 0.0.0.0:55000->55000/tcp, [::]:55000->55000/tcp
-wazuh-filebeat                docker.elastic.co/beats/filebeat-oss:7.10.2   "/usr/local/bin/dock…"   filebeat       6 minutes ago   Up 6 minutes (healthy)   
-wazuh-indexer                 wazuh/wazuh-indexer:4.12.0                    "/entrypoint.sh open…"   indexer        6 minutes ago   Up 6 minutes (healthy)   0.0.0.0:9200->9200/tcp, [::]:9200->9200/tcp, 0.0.0.0:9300->9300/tcp, [::]:9300->9300/tcp
+NAME                          IMAGE                                         COMMAND                  SERVICE        CREATED       STATUS                 PORTS
+wazuh-dashboard               wazuh/wazuh-dashboard:4.12.0                  "/entrypoint.sh"         dashboard      2 hours ago   Up 2 hours (healthy)   443/tcp, 0.0.0.0:5601->5601/tcp, [::]:5601->5601/tcp
+wazuh-docker-agent-centos-1   wazuh-docker-agent-centos                     "/usr/local/bin/entr…"   agent-centos   2 hours ago   Up 2 hours             1514/udp
+wazuh-docker-agent-ubuntu-1   wazuh-docker-agent-ubuntu                     "/usr/local/bin/entr…"   agent-ubuntu   2 hours ago   Up 2 hours             1514/udp
+wazuh-docker-manager-1-1      wazuh-docker-manager-1                        "/usr/local/bin/dock…"   manager-1      2 hours ago   Up 2 hours (healthy)   0.0.0.0:1516->1516/tcp, [::]:1516->1516/tcp, 1514/udp, 1515/tcp, 0.0.0.0:55000->55000/tcp, [::]:55000->55000/tcp
+wazuh-docker-manager-2-1      wazuh-docker-manager-2                        "/usr/local/bin/dock…"   manager-2      2 hours ago   Up 2 hours (healthy)   1515-1516/tcp, 1514/udp, 55000/tcp
+wazuh-docker-wazuh-lb-1       haproxy:2.9                                   "docker-entrypoint.s…"   wazuh-lb       2 hours ago   Up 2 hours             1514-1515/tcp
+wazuh-filebeat                docker.elastic.co/beats/filebeat-oss:7.10.2   "/usr/local/bin/dock…"   filebeat       2 hours ago   Up 2 hours (healthy)   
+wazuh-indexer                 wazuh/wazuh-indexer:4.12.0                    "/entrypoint.sh open…"   indexer        2 hours ago   Up 2 hours (healthy)   0.0.0.0:9200->9200/tcp, [::]:9200->9200/tcp, 0.0.0.0:9300->9300/tcp, [::]:9300->9300/tcp
 ```
 
 ### 2.5 Verify connectivity & enrollment
