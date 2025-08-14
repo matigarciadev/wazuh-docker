@@ -801,7 +801,7 @@ On first run, the agent’s `wazuh-syscheckd` builds/loads a baseline database o
 - **Diff storage when** (text files only):
     - Linux: `/var/ossec/queue/diff/local/`
     - macOS: `/Library/Ossec/queue/diff/local/`
-    - Windows: `C:\Program Files (x86)\ossec-agent\queue\diff\local\`
+    - Windows: `C:\Program Files (x86)\wazuh-agent\queue\diff\local\`
 
 > **Important**: The `realtime` attribute enables continuous monitoring on **Windows and Linux only**. On macOS, FIM runs on a schedule (periodic mode). Use `frequency`, `scan_time`, and `scan_day` to tune cadence.
 
@@ -824,7 +824,7 @@ On first run, the agent’s `wazuh-syscheckd` builds/loads a baseline database o
 ### 4.2 Windows Agent Example
 - Real‑time: supported with `realtime="yes"` on directories. Single file via parent dir + `restrict`, or `whodata="yes"` on the file path.
 - Who‑data: when enabled, the agent configures Local Audit Policy + SACL on the target to emit Security log events (for example 4663/4656), which FIM correlates to `syscheck.audit`.
-- Config path: `C:\Program Files (x86)\ossec-agent\ossec.conf`. Restart: `Restart-Service -Name wazuh`.
+- Config path: `C:\Program Files (x86)\wazuh-agent\ossec.conf`. Restart: `Restart-Service -Name wazuh`.
 - Example (single file):
 
 ```xml
@@ -1285,11 +1285,11 @@ sudo grep -E 'ERROR|WARN' /var/log/filebeat/filebeat -n | tail -n 50 2>/dev/null
 **Agent → Manager (ingest)**
 
   - Agent modules (e.g., **logcollector**, **syscheckd/FIM**, **rootcheck**, **SCA**, etc.) produce events.
-  - `ossec-agentd` sends events to the **Manager** via **1514/TCP** (TLS). Enrollment happens via **1515/TCP** to `authd`.
+  - `wazuh-agentd` sends events to the **Manager** via **1514/TCP** (TLS). Enrollment happens via **1515/TCP** to `authd`.
 
 **Manager (decode, correlate, alert)**
 
-  - `ossec-remoted` receives events and hands them to `ossec-analysisd`.
+  - `wazuh-remoted` receives events and hands them to `wazuh-analysisd`.
   - `analysisd` runs **predecoders → decoders → rules**, leveraging lists (CDB), GeoIP, FTS if enabled.
   - On rule match:
     - Writes structured alerts to (and/or `alerts.log`).
@@ -1320,12 +1320,12 @@ config:
 flowchart TD
     subgraph A["Agent"]
         A1["Agent modules"]
-        A2["ossec-agentd"]
+        A2["wazuh-agentd"]
     end
     subgraph M["Manager / Wazuh Server"]
         M0["authd - enrollment 1515/TCP"]
-        M1["ossec-remoted"]
-        M2["ossec-analysisd predecoders → decoders → rules"]
+        M1["wazuh-remoted"]
+        M2["wazuh-analysisd predecoders → decoders → rules"]
         M3["alerts.json"]
         M4["archives.json archives.log"]
     end
@@ -1413,7 +1413,7 @@ flowchart TD
   %% Two-node Wazuh with HAProxy
   subgraph A["Agent"]
     A1["Agent modules"]
-    A2["ossec-agentd"]
+    A2["wazuh-agentd"]
   end
 
   subgraph LB["HAProxy (wazuh-lb)"]
@@ -1423,8 +1423,8 @@ flowchart TD
 
   subgraph M1["Manager-1 (Master)"]
     M10["authd - enrollment 1515/TCP"]
-    M11["ossec-remoted"]
-    M12["ossec-analysisd predecoders → decoders → rules"]
+    M11["wazuh-remoted"]
+    M12["wazuh-analysisd predecoders → decoders → rules"]
     M13["alerts.json"]
     M14["archives.json archives.log"]
     M1K["client.keys"]
@@ -1432,8 +1432,8 @@ flowchart TD
 
   subgraph M2["Manager-2 (Worker)"]
     M20["authd - enrollment 1515/TCP"]
-    M21["ossec-remoted"]
-    M22["ossec-analysisd predecoders → decoders → rules"]
+    M21["wazuh-remoted"]
+    M22["wazuh-analysisd predecoders → decoders → rules"]
     M23["alerts.json"]
     M24["archives.json archives.log"]
     M2K["client.keys"]
